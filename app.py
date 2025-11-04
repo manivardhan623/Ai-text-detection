@@ -3,11 +3,12 @@ AI Text Detection - Web Service API
 Flask application with local fine-tuned RoBERTa model
 """
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 import os
+import gdown
 
 app = Flask(__name__)
 CORS(app)
@@ -21,77 +22,106 @@ model = None
 tokenizer = None
 
 # ============================================
-# MODEL CONFIGURATION
+# MODEL CONFIGURATION - GOOGLE DRIVE
 # ============================================
-MODEL_DIR = "ensemble_models/roberta-base"
+MODEL_FILE_ID = "1ukeJocF4VUXf53l1xziC494iZFEK7ZDT"
+MODEL_DIR = "roberta-model"
 MODEL_PATH = os.path.join(MODEL_DIR, "model.safetensors")
 
 
-def load_model():
-    """Load the fine-tuned AI text detection model from local directory"""
-    global model, tokenizer
+def download_model_from_drive():
+    """Download model file from Google Drive if not already present"""
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    
+    if os.path.exists(MODEL_PATH):
+        file_size = os.path.getsize(MODEL_PATH) / (1024 * 1024)
+        print(f"✓ Model file already exists ({file_size:.2f} MB)")
+        return True
+    
+    print("=" * 70)
+    print("DOWNLOADING MODEL FROM GOOGLE DRIVE")
+    print("=" * 70)
+    print(f"File ID: {MODEL_FILE_ID}")
+    print(f"Destination: {MODEL_PATH}")
+    print("This may take a few minutes...")
+    print("-" * 70)
+    
+    try:
+        url = f"https://drive.google.com/uc?id={MODEL_FILE_ID}"
+        gdown.download(url, MODEL_PATH, quiet=False)
+        
+        if os.path.exists(MODEL_PATH):
+            file_size = os.path.getsize(MODEL_PATH) / (1024 * 1024)
+            print(f"\n✓ Model downloaded successfully! ({file_size:.2f} MB)")
+            print("=" * 70)
+            return True
+        else:
+            print("✗ Download failed: File not found after download")
+            return False
+    except Exception as e:
+        print(f"✗ Error downloading model: {e}")
+        return False
 
+
+def load_model():
+    """Load the AI text detection model"""
+    global model, tokenizer
+    
     print("\n" + "=" * 70)
     print("LOADING AI TEXT DETECTION MODEL")
     print("=" * 70)
-
-    # Step 1: Verify model directory exists
-    if not os.path.exists(MODEL_DIR):
-        error_msg = f"Model directory not found: {MODEL_DIR}"
-        print(f"✗ {error_msg}")
-        return False, error_msg
-
-    if not os.path.exists(MODEL_PATH):
-        error_msg = f"Model file not found: {MODEL_PATH}"
-        print(f"✗ {error_msg}")
-        return False, error_msg
-
-    # Get model size
-    model_size = os.path.getsize(MODEL_PATH) / (1024 * 1024)
-    print(f"\n✓ Model file found ({model_size:.2f} MB)")
-    print(f"Location: {MODEL_PATH}")
-
-    # Step 2: Load tokenizer from local directory
+    
+    # Step 1: Download model from Google Drive
+    if not download_model_from_drive():
+        return False, "Failed to download model from Google Drive"
+    
+    # Step 2: Load tokenizer
     try:
-        print("\nLoading tokenizer from local directory...")
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
-        print("✓ Tokenizer loaded successfully")
+        print("\nLoading tokenizer...")
+        tokenizer = AutoTokenizer.from_pretrained("roberta-base")
+        print("✓ Tokenizer loaded")
     except Exception as e:
-        error_msg = f"Error loading tokenizer: {str(e)}"
-        print(f"✗ {error_msg}")
-        return False, error_msg
-
-    # Step 3: Load fine-tuned model from local directory
+        return False, f"Error loading tokenizer: {str(e)}"
+    
+    # Step 3: Load model architecture
     try:
-        print("Loading fine-tuned model...")
+        print("Loading model architecture...")
         model = AutoModelForSequenceClassification.from_pretrained(
-            MODEL_DIR,
-            num_labels=2,
-            local_files_only=True
+            "roberta-base",
+            num_labels=2
         )
-        print("✓ Model loaded successfully")
+        print("✓ Model architecture loaded")
     except Exception as e:
-        error_msg = f"Error loading model: {str(e)}"
-        print(f"✗ {error_msg}")
-        return False, error_msg
-
-    # Step 4: Prepare model for inference
+        return False, f"Error loading model: {str(e)}"
+    
+    # Step 4: Load fine-tuned weights
+    try:
+        print("Loading fine-tuned weights...")
+        state_dict = torch.load(MODEL_PATH, map_location=device)
+        
+        if 'model_state_dict' in state_dict:
+            model.load_state_dict(state_dict['model_state_dict'])
+        else:
+            model.load_state_dict(state_dict)
+        
+        print("✓ Fine-tuned weights loaded")
+    except Exception as e:
+        print(f"⚠ Warning: Could not load fine-tuned weights: {e}")
+        print("Using base RoBERTa model")
+    
+    # Step 5: Prepare for inference
     model.to(device)
     model.eval()
-
-    # Count parameters
+    
     total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
+    
     print("\n" + "=" * 70)
     print("✓ MODEL LOADED SUCCESSFULLY!")
     print(f"Device: {device}")
-    print(f"Total Parameters: {total_params:,}")
-    print(f"Trainable Parameters: {trainable_params:,}")
-    print(f"Model Size: {model_size:.2f} MB")
+    print(f"Parameters: {total_params:,}")
     print(f"Expected Accuracy: 98.69%")
     print("=" * 70 + "\n")
-
+    
     return True, "Model loaded successfully"
 
 
@@ -157,18 +187,23 @@ def predict_text(text, min_words=50):
 
 @app.route('/')
 def home():
-    """Home endpoint"""
-    model_status = "loaded" if model is not None else "loading..."
+    """Serve the frontend HTML"""
+    return send_from_directory('.', 'index.html')
 
+
+@app.route('/api')
+def api_info():
+    """API information endpoint"""
     return jsonify({
         'message': 'AI Text Detection API - Fine-tuned RoBERTa Model',
         'status': 'running',
         'model_loaded': model is not None,
         'device': str(device),
         'accuracy': '98.69%',
-        'model_source': 'Local fine-tuned model',
+        'model_source': 'Google Drive',
         'endpoints': {
-            '/': 'GET - API information',
+            '/': 'GET - Frontend interface',
+            '/api': 'GET - API information',
             '/health': 'GET - Health check',
             '/predict': 'POST - Detect AI-generated text',
             '/model-info': 'GET - Model details'
@@ -219,8 +254,8 @@ def model_info():
         'model_size': model_size,
         'training_samples': '40,000',
         'model_loaded': model is not None,
-        'source': 'Local fine-tuned model',
-        'model_path': MODEL_DIR
+        'source': 'Google Drive',
+        'file_id': MODEL_FILE_ID[:10] + "..."
     })
 
 
@@ -274,7 +309,7 @@ print("AI TEXT DETECTION API - STARTING UP")
 print("=" * 70)
 print(f"Python working directory: {os.getcwd()}")
 print(f"Model directory: {MODEL_DIR}")
-print(f"Model path: {MODEL_PATH}")
+print(f"Model file ID: {MODEL_FILE_ID[:20]}...")
 print("=" * 70)
 
 with app.app_context():
@@ -285,9 +320,9 @@ with app.app_context():
         print(f"\n⚠️  WARNING: {message}")
         print("The API will run but predictions will fail.")
         print("\nPlease check:")
-        print("1. Model directory exists: ensemble_models/roberta-base")
-        print("2. Model file exists: ensemble_models/roberta-base/model.safetensors")
-        print("3. All required model files are present (config.json, tokenizer files, etc.)")
+        print("1. Google Drive file ID is correct")
+        print("2. Google Drive link is set to 'Anyone with the link can view'")
+        print("3. File exists in your Google Drive")
 
 print("\n" + "=" * 70 + "\n")
 
