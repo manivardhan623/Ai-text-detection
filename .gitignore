@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+*.log
+venv/
+.vscode/
+.idea/
+processed_data/
+results/
+Original_data/
